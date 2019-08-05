@@ -18,6 +18,7 @@ package downloader
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"os"
 	"strconv"
@@ -340,6 +341,8 @@ func (p2p *P2PDownloader) getItem(latestItem *Piece) (bool, *Piece) {
 				item.Result == constants.ResultSuc) {
 				p2p.total += int64(item.Content.Len())
 				p2p.pieceSet[item.Range] = true
+				//by zx print downloaded percent
+				fmt.Printf("%.2f%%\r", float64(p2p.total) / float64(p2p.cfg.RV.FileLength) * 100);
 			} else if !v {
 				delete(p2p.pieceSet, item.Range)
 			}

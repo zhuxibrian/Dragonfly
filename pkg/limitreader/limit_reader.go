@@ -74,7 +74,9 @@ type LimitReader struct {
 	Src     io.Reader
 	Limiter *ratelimiter.RateLimiter
 	md5sum  hash.Hash
+	PrintFunc func(n int64)
 }
+
 
 func (lr *LimitReader) Read(p []byte) (n int, err error) {
 	n, e := lr.Src.Read(p)
@@ -86,6 +88,11 @@ func (lr *LimitReader) Read(p []byte) (n int, err error) {
 			lr.md5sum.Write(p[:n])
 		}
 		lr.Limiter.AcquireBlocking(int64(n))
+	}
+
+	//by zx print downloaded percent
+	if lr.PrintFunc != nil {
+		lr.PrintFunc(int64(n));
 	}
 	return n, e
 }

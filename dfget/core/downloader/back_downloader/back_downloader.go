@@ -18,12 +18,6 @@ package downloader
 
 import (
 	"fmt"
-	"io"
-	"io/ioutil"
-	"net/http"
-	"os"
-	"path"
-
 	"github.com/dragonflyoss/Dragonfly/dfget/config"
 	"github.com/dragonflyoss/Dragonfly/dfget/core/downloader"
 	"github.com/dragonflyoss/Dragonfly/dfget/core/regist"
@@ -32,8 +26,12 @@ import (
 	"github.com/dragonflyoss/Dragonfly/pkg/limitreader"
 	"github.com/dragonflyoss/Dragonfly/pkg/netutils"
 	"github.com/dragonflyoss/Dragonfly/pkg/stringutils"
-
 	"github.com/sirupsen/logrus"
+	"io"
+	"io/ioutil"
+	"net/http"
+	"os"
+	"path"
 )
 
 // BackDownloader downloads the file from file resource.
@@ -75,6 +73,15 @@ func NewBackDownloader(cfg *config.Config, result *regist.RegisterResult) *BackD
 	}
 }
 
+func printPercent(total int64) func(int64) {
+	currentBytes := int64(0)
+	totalBytes := total
+	return func(addBytes int64) {
+		currentBytes += addBytes
+		fmt.Printf("%.2f%%\r", float64(currentBytes) / float64(totalBytes) * 100)
+	}
+}
+
 // Run starts to download the file.
 func (bd *BackDownloader) Run() error {
 	var (
@@ -112,6 +119,8 @@ func (bd *BackDownloader) Run() error {
 
 	buf := make([]byte, 512*1024)
 	reader := limitreader.NewLimitReader(resp.Body, bd.cfg.LocalLimit, bd.Md5 != "")
+	//by zx直连模式下显示下载进度
+	reader.PrintFunc = printPercent(resp.ContentLength)
 	if _, err = io.CopyBuffer(f, reader, buf); err != nil {
 		return err
 	}
