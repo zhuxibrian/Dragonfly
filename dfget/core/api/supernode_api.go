@@ -21,8 +21,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/dragonflyoss/Dragonfly/common/util"
 	"github.com/dragonflyoss/Dragonfly/dfget/types"
+	"github.com/dragonflyoss/Dragonfly/pkg/constants"
+	"github.com/dragonflyoss/Dragonfly/pkg/httputils"
+
+	"github.com/sirupsen/logrus"
 )
 
 /* the url paths of supernode APIs*/
@@ -39,7 +42,7 @@ func NewSupernodeAPI() SupernodeAPI {
 	return &supernodeAPI{
 		Scheme:     "http",
 		Timeout:    5 * time.Second,
-		HTTPClient: util.DefaultHTTPClient,
+		HTTPClient: httputils.DefaultHTTPClient,
 	}
 }
 
@@ -55,7 +58,7 @@ type SupernodeAPI interface {
 type supernodeAPI struct {
 	Scheme     string
 	Timeout    time.Duration
-	HTTPClient util.SimpleHTTPClient
+	HTTPClient httputils.SimpleHTTPClient
 }
 
 var _ SupernodeAPI = &supernodeAPI{}
@@ -73,11 +76,13 @@ func (api *supernodeAPI) Register(node string, req *types.RegisterRequest) (
 	if code, body, e = api.HTTPClient.PostJSON(url, req, api.Timeout); e != nil {
 		return nil, e
 	}
-	if !util.HTTPStatusOk(code) {
+	if !httputils.HTTPStatusOk(code) {
 		return nil, fmt.Errorf("%d:%s", code, body)
 	}
 	resp = new(types.RegisterResponse)
-	e = json.Unmarshal(body, resp)
+	if e = json.Unmarshal(body, resp); e != nil {
+		return nil, e
+	}
 	return resp, e
 }
 
@@ -87,10 +92,12 @@ func (api *supernodeAPI) PullPieceTask(node string, req *types.PullPieceTaskRequ
 	resp *types.PullPieceTaskResponse, e error) {
 
 	url := fmt.Sprintf("%s://%s%s?%s",
-		api.Scheme, node, peerPullPieceTaskPath, util.ParseQuery(req))
+		api.Scheme, node, peerPullPieceTaskPath, httputils.ParseQuery(req))
 
 	resp = new(types.PullPieceTaskResponse)
-	e = api.get(url, resp)
+	if e = api.get(url, resp); e != nil {
+		return nil, e
+	}
 	return
 }
 
@@ -99,10 +106,16 @@ func (api *supernodeAPI) ReportPiece(node string, req *types.ReportPieceRequest)
 	resp *types.BaseResponse, e error) {
 
 	url := fmt.Sprintf("%s://%s%s?%s",
-		api.Scheme, node, peerReportPiecePath, util.ParseQuery(req))
+		api.Scheme, node, peerReportPiecePath, httputils.ParseQuery(req))
 
 	resp = new(types.BaseResponse)
-	e = api.get(url, resp)
+	if e = api.get(url, resp); e != nil {
+		logrus.Errorf("failed to report piece{taskid:%s,range:%s},err: %v", req.TaskID, req.PieceRange, e)
+		return nil, e
+	}
+	if resp != nil && resp.Code != constants.CodeGetPieceReport {
+		logrus.Errorf("failed to report piece{taskid:%s,range:%s} to supernode: api response code is %d not equal to %d", req.TaskID, req.PieceRange, resp.Code, constants.CodeGetPieceReport)
+	}
 	return
 }
 
@@ -114,7 +127,13 @@ func (api *supernodeAPI) ServiceDown(node string, taskID string, cid string) (
 		api.Scheme, node, peerServiceDownPath, taskID, cid)
 
 	resp = new(types.BaseResponse)
-	e = api.get(url, resp)
+	if e = api.get(url, resp); e != nil {
+		logrus.Errorf("failed to send service down,err: %v", e)
+		return nil, e
+	}
+	if resp != nil && resp.Code != constants.CodeGetPeerDown {
+		logrus.Errorf("failed to send service down to supernode: api response code is %d not equal to %d", resp.Code, constants.CodeGetPeerDown)
+	}
 	return
 }
 
@@ -123,7 +142,7 @@ func (api *supernodeAPI) ReportClientError(node string, req *types.ClientErrorRe
 	resp *types.BaseResponse, e error) {
 
 	url := fmt.Sprintf("%s://%s%s?%s",
-		api.Scheme, node, peerClientErrorPath, util.ParseQuery(req))
+		api.Scheme, node, peerClientErrorPath, httputils.ParseQuery(req))
 
 	resp = new(types.BaseResponse)
 	e = api.get(url, resp)
@@ -142,7 +161,7 @@ func (api *supernodeAPI) get(url string, resp interface{}) error {
 	if code, body, e = api.HTTPClient.Get(url, api.Timeout); e != nil {
 		return e
 	}
-	if !util.HTTPStatusOk(code) {
+	if !httputils.HTTPStatusOk(code) {
 		return fmt.Errorf("%d:%s", code, body)
 	}
 	e = json.Unmarshal(body, resp)

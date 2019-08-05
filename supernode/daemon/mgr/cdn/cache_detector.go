@@ -4,7 +4,8 @@ import (
 	"context"
 
 	"github.com/dragonflyoss/Dragonfly/apis/types"
-	cutil "github.com/dragonflyoss/Dragonfly/common/util"
+	"github.com/dragonflyoss/Dragonfly/pkg/httputils"
+	"github.com/dragonflyoss/Dragonfly/pkg/stringutils"
 	"github.com/dragonflyoss/Dragonfly/supernode/store"
 
 	"github.com/sirupsen/logrus"
@@ -49,10 +50,12 @@ func (cd *cacheDetector) detectCache(ctx context.Context, task *types.TaskInfo) 
 }
 
 func (cd *cacheDetector) parseBreakNum(ctx context.Context, task *types.TaskInfo, metaData *fileMetaData) int {
-	expired, err := cutil.IsExpired(task.TaskURL, task.Headers, metaData.LastModified, metaData.ETag)
+	expired, err := httputils.IsExpired(task.RawURL, task.Headers, metaData.LastModified, metaData.ETag)
 	if err != nil {
 		logrus.Errorf("failed to check whether the task(%s) has expired: %v", task.ID, err)
 	}
+
+	logrus.Debugf("success to get expired result: %t for taskID(%s)", expired, task.ID)
 	if expired {
 		return 0
 	}
@@ -64,7 +67,7 @@ func (cd *cacheDetector) parseBreakNum(ctx context.Context, task *types.TaskInfo
 		return 0
 	}
 
-	supportRange, err := cutil.IsSupportRange(task.TaskURL, task.Headers)
+	supportRange, err := httputils.IsSupportRange(task.TaskURL, task.Headers)
 	if err != nil {
 		logrus.Errorf("failed to check whether the task(%s) supports partial requests: %v", task.ID, err)
 	}
@@ -103,8 +106,12 @@ func (cd *cacheDetector) resetRepo(ctx context.Context, task *types.TaskInfo) (*
 	return cd.metaDataManager.writeFileMetaDataByTask(ctx, task)
 }
 
-func checkSameFile(task *types.TaskInfo, metaData *fileMetaData) bool {
-	if cutil.IsNil(task) || cutil.IsNil(metaData) {
+func checkSameFile(task *types.TaskInfo, metaData *fileMetaData) (result bool) {
+	defer func() {
+		logrus.Debugf("check same File for taskID(%s) get result: %t", task.ID, result)
+	}()
+
+	if task == nil || metaData == nil {
 		return false
 	}
 
@@ -120,7 +127,7 @@ func checkSameFile(task *types.TaskInfo, metaData *fileMetaData) bool {
 		return false
 	}
 
-	if !cutil.IsEmptyStr(task.Md5) {
+	if !stringutils.IsEmptyStr(task.Md5) {
 		return metaData.Md5 == task.Md5
 	}
 

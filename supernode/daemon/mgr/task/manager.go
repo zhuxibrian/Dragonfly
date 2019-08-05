@@ -2,10 +2,14 @@ package task
 
 import (
 	"context"
+	"time"
 
 	"github.com/dragonflyoss/Dragonfly/apis/types"
-	errorType "github.com/dragonflyoss/Dragonfly/common/errors"
-	cutil "github.com/dragonflyoss/Dragonfly/common/util"
+	"github.com/dragonflyoss/Dragonfly/pkg/errortypes"
+	"github.com/dragonflyoss/Dragonfly/pkg/httputils"
+	"github.com/dragonflyoss/Dragonfly/pkg/stringutils"
+	"github.com/dragonflyoss/Dragonfly/pkg/syncmap"
+	"github.com/dragonflyoss/Dragonfly/pkg/timeutils"
 	"github.com/dragonflyoss/Dragonfly/supernode/config"
 	"github.com/dragonflyoss/Dragonfly/supernode/daemon/mgr"
 	dutil "github.com/dragonflyoss/Dragonfly/supernode/daemon/util"
@@ -23,14 +27,16 @@ var _ mgr.TaskMgr = &Manager{}
 
 // using a variable getContentLength to reference the function util.GetContentLength,
 // and it helps using stub functions in the test with gostub.
-var getContentLength = cutil.GetContentLength
+var getContentLength = httputils.GetContentLength
 
 // Manager is an implementation of the interface of TaskMgr.
 type Manager struct {
 	cfg *config.Config
 
-	taskStore  *dutil.Store
-	taskLocker *util.LockerPool
+	taskStore               *dutil.Store
+	taskLocker              *util.LockerPool
+	accessTimeMap           *syncmap.SyncMap
+	taskURLUnReachableStore *syncmap.SyncMap
 
 	peerMgr      mgr.PeerMgr
 	dfgetTaskMgr mgr.DfgetTaskMgr
@@ -43,14 +49,16 @@ type Manager struct {
 func NewManager(cfg *config.Config, peerMgr mgr.PeerMgr, dfgetTaskMgr mgr.DfgetTaskMgr,
 	progressMgr mgr.ProgressMgr, cdnMgr mgr.CDNMgr, schedulerMgr mgr.SchedulerMgr) (*Manager, error) {
 	return &Manager{
-		cfg:          cfg,
-		taskStore:    dutil.NewStore(),
-		taskLocker:   util.NewLockerPool(),
-		peerMgr:      peerMgr,
-		dfgetTaskMgr: dfgetTaskMgr,
-		progressMgr:  progressMgr,
-		cdnMgr:       cdnMgr,
-		schedulerMgr: schedulerMgr,
+		cfg:                     cfg,
+		taskStore:               dutil.NewStore(),
+		taskLocker:              util.NewLockerPool(),
+		peerMgr:                 peerMgr,
+		dfgetTaskMgr:            dfgetTaskMgr,
+		progressMgr:             progressMgr,
+		cdnMgr:                  cdnMgr,
+		schedulerMgr:            schedulerMgr,
+		accessTimeMap:           syncmap.NewSyncMap(),
+		taskURLUnReachableStore: syncmap.NewSyncMap(),
 	}, nil
 }
 
@@ -62,13 +70,19 @@ func (tm *Manager) Register(ctx context.Context, req *types.TaskCreateRequest) (
 	}
 
 	// Step2: add a new Task or update the exist task
-	task, err := tm.addOrUpdateTask(ctx, req)
+	failAccessInterval := tm.cfg.FailAccessInterval * time.Minute
+	task, err := tm.addOrUpdateTask(ctx, req, failAccessInterval)
 	if err != nil {
 		logrus.Infof("failed to add or update task with req %+v: %v", req, err)
 		return nil, err
 	}
 	logrus.Debugf("success to get task info: %+v", task)
 	// TODO: defer rollback the task update
+
+	// update accessTime for taskID
+	if err := tm.accessTimeMap.Add(task.ID, timeutils.GetCurrentTimeMillis()); err != nil {
+		logrus.Warnf("failed to update accessTime for taskID(%s): %v", task.ID, err)
+	}
 
 	// Step3: add a new DfgetTask
 	dfgetTask, err := tm.addDfgetTask(ctx, req, task)
@@ -96,7 +110,7 @@ func (tm *Manager) Register(ctx context.Context, req *types.TaskCreateRequest) (
 
 	// Step5: trigger CDN
 	if err := tm.triggerCdnSyncAction(ctx, task); err != nil {
-		return nil, errors.Wrapf(errorType.ErrSystemError, "failed to trigger cdn: %v", err)
+		return nil, errors.Wrapf(errortypes.ErrSystemError, "failed to trigger cdn: %v", err)
 	}
 
 	return &types.TaskCreateResponse{
@@ -109,6 +123,11 @@ func (tm *Manager) Register(ctx context.Context, req *types.TaskCreateRequest) (
 // Get a task info according to specified taskID.
 func (tm *Manager) Get(ctx context.Context, taskID string) (*types.TaskInfo, error) {
 	return tm.getTask(taskID)
+}
+
+// GetAccessTime gets all task accessTime.
+func (tm *Manager) GetAccessTime(ctx context.Context) (*syncmap.SyncMap, error) {
+	return tm.accessTimeMap, nil
 }
 
 // List returns a list of tasks with filter.
@@ -125,8 +144,8 @@ func (tm *Manager) CheckTaskStatus(ctx context.Context, taskID string) (bool, er
 	}
 
 	// the expected CDNStatus is not nil
-	if cutil.IsEmptyStr(task.CdnStatus) {
-		return false, errors.Wrap(errorType.ErrSystemError, "CDNStatus of TaskInfo")
+	if stringutils.IsEmptyStr(task.CdnStatus) {
+		return false, errors.Wrap(errortypes.ErrSystemError, "CDNStatus of TaskInfo")
 	}
 
 	return isSuccessCDN(task.CdnStatus), nil
@@ -149,8 +168,8 @@ func (tm *Manager) GetPieces(ctx context.Context, taskID, clientID string, req *
 
 	// convert piece result and dfgetTask status to dfgetTask status code
 	dfgetTaskStatus := convertToDfgetTaskStatus(req.PieceResult, req.DfgetTaskStatus)
-	if cutil.IsEmptyStr(dfgetTaskStatus) {
-		return false, nil, errors.Wrapf(errorType.ErrInvalidValue, "failed to convert piece result (%s) dfgetTaskStatus (%s)", req.PieceResult, req.DfgetTaskStatus)
+	if stringutils.IsEmptyStr(dfgetTaskStatus) {
+		return false, nil, errors.Wrapf(errortypes.ErrInvalidValue, "failed to convert piece result (%s) dfgetTaskStatus (%s)", req.PieceResult, req.DfgetTaskStatus)
 	}
 
 	dfgetTask, err := tm.dfgetTaskMgr.Get(ctx, clientID, taskID)
@@ -164,6 +183,11 @@ func (tm *Manager) GetPieces(ctx context.Context, taskID, clientID string, req *
 		return false, nil, errors.Wrapf(err, "failed to get taskID (%s)", taskID)
 	}
 	logrus.Debugf("success to get task: %+v", task)
+
+	// update accessTime for taskID
+	if err := tm.accessTimeMap.Add(task.ID, timeutils.GetCurrentTimeMillis()); err != nil {
+		logrus.Warnf("failed to update accessTime for taskID(%s): %v", task.ID, err)
+	}
 
 	if dfgetTaskStatus == types.DfGetTaskStatusWAITING {
 		logrus.Debugf("start to process task(%s) start", taskID)
@@ -182,7 +206,7 @@ func (tm *Manager) UpdatePieceStatus(ctx context.Context, taskID, pieceRange str
 	// calculate the pieceNum according to the pieceRange
 	pieceNum := util.CalculatePieceNum(pieceRange)
 	if pieceNum == -1 {
-		return errors.Wrapf(errorType.ErrInvalidValue,
+		return errors.Wrapf(errortypes.ErrInvalidValue,
 			"failed to parse pieceRange: %s to pieceNum for taskID: %s, clientID: %s",
 			pieceRange, taskID, pieceUpdateRequest.ClientID)
 	}
@@ -196,7 +220,7 @@ func (tm *Manager) UpdatePieceStatus(ctx context.Context, taskID, pieceRange str
 	// get piece status code according to the pieceUpdateRequest.Result
 	pieceStatus, ok := mgr.PieceStatusMap[pieceUpdateRequest.PieceStatus]
 	if !ok {
-		return errors.Wrapf(errorType.ErrInvalidValue, "result: %s", pieceUpdateRequest.PieceStatus)
+		return errors.Wrapf(errortypes.ErrInvalidValue, "result: %s", pieceUpdateRequest.PieceStatus)
 	}
 
 	return tm.progressMgr.UpdateProgress(ctx, taskID, pieceUpdateRequest.ClientID,

@@ -30,11 +30,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dragonflyoss/Dragonfly/common/errors"
-	"github.com/dragonflyoss/Dragonfly/common/util"
 	"github.com/dragonflyoss/Dragonfly/dfget/config"
 	"github.com/dragonflyoss/Dragonfly/dfget/core/api"
 	"github.com/dragonflyoss/Dragonfly/dfget/core/helper"
+	"github.com/dragonflyoss/Dragonfly/pkg/errortypes"
+	"github.com/dragonflyoss/Dragonfly/pkg/limitreader"
+	"github.com/dragonflyoss/Dragonfly/pkg/ratelimiter"
 	"github.com/dragonflyoss/Dragonfly/version"
 
 	"github.com/gorilla/mux"
@@ -76,7 +77,7 @@ type peerServer struct {
 	*http.Server
 
 	api         api.SupernodeAPI
-	rateLimiter *util.RateLimiter
+	rateLimiter *ratelimiter.RateLimiter
 
 	// totalLimitRate is the total network bandwidth shared by tasks on the same host
 	totalLimitRate int
@@ -87,12 +88,13 @@ type peerServer struct {
 
 // taskConfig refers to some name about peer task.
 type taskConfig struct {
-	taskID    string
-	rateLimit int
-	cid       string
-	dataDir   string
-	superNode string
-	finished  bool
+	taskID     string
+	rateLimit  int
+	cid        string
+	dataDir    string
+	superNode  string
+	finished   bool
+	accessTime time.Time
 }
 
 // uploadParam refers to all params needed in the handler of upload.
@@ -209,9 +211,9 @@ func (ps *peerServer) checkHandler(w http.ResponseWriter, r *http.Request) {
 	totalLimit, err := strconv.Atoi(r.Header.Get(config.StrTotalLimit))
 	if err == nil && totalLimit > 0 {
 		if ps.rateLimiter == nil {
-			ps.rateLimiter = util.NewRateLimiter(int32(totalLimit), 2)
+			ps.rateLimiter = ratelimiter.NewRateLimiter(int64(totalLimit), 2)
 		} else {
-			ps.rateLimiter.SetRate(util.TransRate(totalLimit))
+			ps.rateLimiter.SetRate(ratelimiter.TransRate(totalLimit))
 		}
 		ps.totalLimitRate = totalLimit
 		logrus.Infof("update total limit to %d", totalLimit)
@@ -253,13 +255,15 @@ func (ps *peerServer) oneFinishHandler(w http.ResponseWriter, r *http.Request) {
 		task.cid = cid
 		task.superNode = superNode
 		task.finished = true
+		task.accessTime = time.Now()
 	} else {
 		ps.syncTaskMap.Store(taskFileName, &taskConfig{
-			taskID:    taskID,
-			cid:       cid,
-			dataDir:   ps.cfg.RV.SystemDataDir,
-			superNode: superNode,
-			finished:  true,
+			taskID:     taskID,
+			cid:        cid,
+			dataDir:    ps.cfg.RV.SystemDataDir,
+			superNode:  superNode,
+			finished:   true,
+			accessTime: time.Now(),
 		})
 	}
 	sendSuccess(w)
@@ -274,7 +278,7 @@ func (ps *peerServer) pingHandler(w http.ResponseWriter, r *http.Request) {
 // ----------------------------------------------------------------------------
 // handler process
 
-// getTaskFile find the file2000 and return the File object.
+// getTaskFile finds the file and returns the File object.
 func (ps *peerServer) getTaskFile(taskFileName string) (*os.File, int64, error) {
 	errSize := int64(-1)
 
@@ -286,6 +290,9 @@ func (ps *peerServer) getTaskFile(taskFileName string) (*os.File, int64, error) 
 	if !ok {
 		return nil, errSize, fmt.Errorf("failed to assert: %s", taskFileName)
 	}
+
+	// update the accessTime of taskFileName
+	tc.accessTime = time.Now()
 
 	taskPath := helper.GetServiceFile(taskFileName, tc.dataDir)
 
@@ -310,11 +317,11 @@ func amendRange(size int64, needPad bool, up *uploadParam) error {
 
 	// we must send an whole piece with both piece head and tail
 	if up.length < up.padSize || up.start < 0 {
-		return errors.ErrRangeNotSatisfiable
+		return errortypes.ErrRangeNotSatisfiable
 	}
 
 	if up.start >= size && !needPad {
-		return errors.ErrRangeNotSatisfiable
+		return errortypes.ErrRangeNotSatisfiable
 	}
 
 	if up.start+up.length-up.padSize > size {
@@ -384,7 +391,7 @@ func (ps *peerServer) uploadPiece(f *os.File, w http.ResponseWriter, up *uploadP
 	f.Seek(up.start, 0)
 	r := io.LimitReader(f, readLen)
 	if ps.rateLimiter != nil {
-		lr := util.NewLimitReaderWithLimiter(ps.rateLimiter, r, false)
+		lr := limitreader.NewLimitReaderWithLimiter(ps.rateLimiter, r, false)
 		_, e = io.CopyBuffer(w, lr, buf)
 	} else {
 		_, e = io.CopyBuffer(w, r, buf)
@@ -482,7 +489,15 @@ func (ps *peerServer) deleteExpiredFile(path string, info os.FileInfo,
 		if ok && !task.finished {
 			return false
 		}
-		if time.Now().Sub(info.ModTime()) > expireTime {
+
+		var lastAccessTime = task.accessTime
+		// use the bigger of access time and modify time to
+		// check whether the task is expired
+		if task.accessTime.Sub(info.ModTime()) < 0 {
+			lastAccessTime = info.ModTime()
+		}
+		// if the last access time is expireTime ago
+		if time.Since(lastAccessTime) > expireTime {
 			if ok {
 				ps.api.ServiceDown(task.superNode, task.taskID, task.cid)
 			}
@@ -510,7 +525,7 @@ func sendHeader(w http.ResponseWriter, code int) {
 }
 
 func rangeErrorResponse(w http.ResponseWriter, err error) {
-	if errors.IsRangeNotSatisfiable(err) {
+	if errortypes.IsRangeNotSatisfiable(err) {
 		http.Error(w, config.RangeNotSatisfiableDesc, http.StatusRequestedRangeNotSatisfiable)
 	} else if os.IsPermission(err) {
 		http.Error(w, err.Error(), http.StatusForbidden)

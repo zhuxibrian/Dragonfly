@@ -17,10 +17,7 @@
 package task
 
 import (
-	"context"
-
 	"github.com/dragonflyoss/Dragonfly/apis/types"
-	cutil "github.com/dragonflyoss/Dragonfly/common/util"
 	"github.com/dragonflyoss/Dragonfly/supernode/config"
 	"github.com/dragonflyoss/Dragonfly/supernode/daemon/mgr/mock"
 
@@ -65,63 +62,65 @@ func (s *TaskUtilTestSuite) TearDownSuite(c *check.C) {
 	s.contentLengthStub.Reset()
 }
 
-func (s *TaskUtilTestSuite) TestAddOrUpdateTask(c *check.C) {
+func (s *TaskUtilTestSuite) TestEqualsTask(c *check.C) {
 	var cases = []struct {
-		req    *types.TaskCreateRequest
-		task   *types.TaskInfo
-		errNil bool
+		existTask *types.TaskInfo
+		task      *types.TaskInfo
+		result    bool
 	}{
 		{
-			req: &types.TaskCreateRequest{
-				CID:        "cid",
-				CallSystem: "foo",
-				Dfdaemon:   true,
-				Path:       "/peer/file/foo",
-				RawURL:     "http://aa.bb.com",
+			existTask: &types.TaskInfo{
+				ID:             generateTaskID("http://aa.bb.com", "", ""),
+				CdnStatus:      types.TaskInfoCdnStatusRUNNING,
+				HTTPFileLength: 1000,
+				PieceSize:      config.DefaultPieceSize,
+				PieceTotal:     1,
+				RawURL:         "http://aa.bb.com?page=1",
+				TaskURL:        "http://aa.bb.com",
+				Md5:            "fooMD5",
 			},
 			task: &types.TaskInfo{
 				ID:             generateTaskID("http://aa.bb.com", "", ""),
-				CallSystem:     "foo",
 				CdnStatus:      types.TaskInfoCdnStatusWAITING,
-				Dfdaemon:       true,
 				HTTPFileLength: 1000,
 				PieceSize:      config.DefaultPieceSize,
 				PieceTotal:     1,
 				RawURL:         "http://aa.bb.com",
 				TaskURL:        "http://aa.bb.com",
+				Md5:            "fooMD5",
 			},
-			errNil: true,
+			result: true,
 		},
 		{
-			req: &types.TaskCreateRequest{
-				CID:        "cid2",
-				CallSystem: "foo2",
-				Dfdaemon:   false,
-				Path:       "/peer/file/foo2",
-				RawURL:     "http://aa.bb.com",
-				Headers:    map[string]string{"aaa": "bbb"},
-			},
-			task: &types.TaskInfo{
+
+			existTask: &types.TaskInfo{
 				ID:             generateTaskID("http://aa.bb.com", "", ""),
-				CallSystem:     "foo",
 				CdnStatus:      types.TaskInfoCdnStatusWAITING,
-				Dfdaemon:       true,
 				HTTPFileLength: 1000,
 				PieceSize:      config.DefaultPieceSize,
 				PieceTotal:     1,
 				RawURL:         "http://aa.bb.com",
 				TaskURL:        "http://aa.bb.com",
 				Headers:        map[string]string{"aaa": "bbb"},
+				Md5:            "fooMD5",
 			},
-			errNil: true,
+			task: &types.TaskInfo{
+				ID:             generateTaskID("http://aa.bb.com", "", ""),
+				CdnStatus:      types.TaskInfoCdnStatusWAITING,
+				HTTPFileLength: 1000,
+				PieceSize:      config.DefaultPieceSize,
+				PieceTotal:     1,
+				RawURL:         "http://aa.bb.com",
+				TaskURL:        "http://aa.bb.com",
+				Headers:        map[string]string{"aaa": "bbb"},
+				Md5:            "otherMD5",
+			},
+			result: false,
 		},
 	}
 
 	for _, v := range cases {
-		task, err := s.taskManager.addOrUpdateTask(context.Background(), v.req)
-		c.Check(cutil.IsNil(err), check.Equals, v.errNil)
-		taskInfo, err := s.taskManager.getTask(task.ID)
-		c.Check(err, check.IsNil)
-		c.Check(taskInfo, check.DeepEquals, v.task)
+		result := equalsTask(v.existTask, v.task)
+		c.Check(result, check.DeepEquals, v.result)
 	}
 }

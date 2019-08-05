@@ -12,11 +12,13 @@ import (
 	"time"
 
 	"github.com/dragonflyoss/Dragonfly/apis/types"
-	cutil "github.com/dragonflyoss/Dragonfly/common/util"
+	"github.com/dragonflyoss/Dragonfly/pkg/httputils"
 	"github.com/dragonflyoss/Dragonfly/supernode/config"
 	"github.com/dragonflyoss/Dragonfly/version"
 
 	"github.com/go-check/check"
+	"github.com/gorilla/mux"
+	prom_testutil "github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 func Test(t *testing.T) {
@@ -31,6 +33,7 @@ func init() {
 type RouterTestSuite struct {
 	addr     string
 	listener net.Listener
+	router   *mux.Router
 }
 
 func (rs *RouterTestSuite) SetUpSuite(c *check.C) {
@@ -57,10 +60,11 @@ func (rs *RouterTestSuite) SetUpSuite(c *check.C) {
 		OS:        runtime.GOOS,
 		GoVersion: runtime.Version(),
 	}
-	router := initRoute(s)
+
+	rs.router = initRoute(s)
 	rs.listener, err = net.Listen("tcp", rs.addr)
 	c.Check(err, check.IsNil)
-	go http.Serve(rs.listener, router)
+	go http.Serve(rs.listener, rs.router)
 }
 
 func (rs *RouterTestSuite) TearDownSuite(c *check.C) {
@@ -87,14 +91,14 @@ func (rs *RouterTestSuite) TestDebugHandler(c *check.C) {
 		// path not exists
 		{"/debug/pprof/foo", 404},
 	} {
-		code, _, err := cutil.Get("http://"+rs.addr+tc.url, 0)
+		code, _, err := httputils.Get("http://"+rs.addr+tc.url, 0)
 		c.Check(err, check.IsNil)
 		c.Assert(code, check.Equals, tc.code)
 	}
 }
 
 func (rs *RouterTestSuite) TestVersionHandler(c *check.C) {
-	code, res, err := cutil.Get("http://"+rs.addr+"/version", 0)
+	code, res, err := httputils.Get("http://"+rs.addr+"/version", 0)
 	c.Check(err, check.IsNil)
 	c.Assert(code, check.Equals, 200)
 
@@ -108,4 +112,23 @@ func (rs *RouterTestSuite) TestVersionHandler(c *check.C) {
 
 	c.Check(err, check.IsNil)
 	c.Check(string(expectDFVersion), check.Equals, string(res))
+}
+
+func (rs *RouterTestSuite) TestHTTPMetrics(c *check.C) {
+	// ensure /metrics is accessible
+	code, _, err := httputils.Get("http://"+rs.addr+"/metrics", 0)
+	c.Check(err, check.IsNil)
+	c.Assert(code, check.Equals, 200)
+
+	counter := m.requestCounter
+	c.Assert(1, check.Equals,
+		int(prom_testutil.ToFloat64(counter.WithLabelValues(strconv.Itoa(http.StatusOK), "/metrics", "get"))))
+
+	for i := 0; i < 5; i++ {
+		code, _, err := httputils.Get("http://"+rs.addr+"/_ping", 0)
+		c.Check(err, check.IsNil)
+		c.Assert(code, check.Equals, 200)
+		c.Assert(i+1, check.Equals,
+			int(prom_testutil.ToFloat64(counter.WithLabelValues(strconv.Itoa(http.StatusOK), "/_ping", "get"))))
+	}
 }

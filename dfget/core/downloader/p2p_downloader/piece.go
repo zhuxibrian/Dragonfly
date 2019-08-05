@@ -20,8 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"github.com/dragonflyoss/Dragonfly/common/constants"
-	"github.com/dragonflyoss/Dragonfly/common/util"
+	"github.com/dragonflyoss/Dragonfly/pkg/constants"
 )
 
 // Piece contains all information of a piece.
@@ -98,7 +97,7 @@ func NewPieceSimple(taskID string, node string, status int) *Piece {
 // NewPieceContent creates a Piece with specified content.
 func NewPieceContent(taskID, node, dstCid, pieceRange string,
 	result, status int, contents *bytes.Buffer) *Piece {
-	if util.IsNil(contents) {
+	if contents == nil {
 		contents = &bytes.Buffer{}
 	}
 	return &Piece{

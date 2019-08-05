@@ -68,3 +68,10 @@ const (
 	// CDNWriterRoutineLimit 4
 	CDNWriterRoutineLimit = 4
 )
+
+const (
+	// SubsystemSupernode represents metrics from supernode
+	SubsystemSupernode = "supernode"
+	// SubsystemDfget represents metrics from dfget
+	SubsystemDfget = "dfget"
+)

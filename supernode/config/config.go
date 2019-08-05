@@ -4,13 +4,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v2"
 
-	"github.com/dragonflyoss/Dragonfly/common/util"
+	"github.com/dragonflyoss/Dragonfly/pkg/fileutils"
 )
 
-// NewConfig create a instant with default values.
+// NewConfig create an instant with default values.
 func NewConfig() *Config {
 	return &Config{
 		BaseProperties: NewBaseProperties(),
@@ -26,7 +27,7 @@ type Config struct {
 
 // Load loads config properties from the giving file.
 func (c *Config) Load(path string) error {
-	return util.LoadYaml(path, c)
+	return fileutils.LoadYaml(path, c)
 }
 
 func (c *Config) String() string {
@@ -67,7 +68,7 @@ func (c *Config) IsSuperPID(peerID string) bool {
 	return peerID == c.superNodePID
 }
 
-// NewBaseProperties create a instant with default values.
+// NewBaseProperties create an instant with default values.
 func NewBaseProperties() *BaseProperties {
 	home := filepath.Join(string(filepath.Separator), "home", "admin", "supernode")
 	return &BaseProperties{
@@ -85,6 +86,7 @@ func NewBaseProperties() *BaseProperties {
 		MaxBandwidth:            200,
 		EnableProfiler:          false,
 		Debug:                   false,
+		FailAccessInterval:      3,
 	}
 }
 
@@ -166,6 +168,11 @@ type BaseProperties struct {
 	// AdvertiseIP is used to set the ip that we advertise to other peer in the p2p-network.
 	// By default, the first non-loop address is advertised.
 	AdvertiseIP string `yaml:"advertiseIP"`
+
+	// FailAccessInterval is the interval time after failed to access the URL.
+	// unit: minutes
+	// default: 3
+	FailAccessInterval time.Duration `yaml:"failAccessInterval"`
 
 	// cIDPrefix s a prefix string used to indicate that the CID is supernode.
 	cIDPrefix string

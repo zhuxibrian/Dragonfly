@@ -28,6 +28,7 @@ import (
 
 	"github.com/dragonflyoss/Dragonfly/dfget/config"
 	"github.com/dragonflyoss/Dragonfly/version"
+
 	"github.com/sirupsen/logrus"
 )
 
@@ -52,7 +53,7 @@ func StartPeerServerProcess(cfg *config.Config) (port int, err error) {
 	if defaultExecutor != nil {
 		return defaultExecutor.StartPeerServerProcess(cfg)
 	}
-	return 0, fmt.Errorf("executor of peer server isn't be initiliazed")
+	return 0, fmt.Errorf("executor of peer server hasn't been initialized")
 }
 
 // PeerServerExecutor starts an independent peer server process for uploading downloaded files.
